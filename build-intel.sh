@@ -93,7 +93,10 @@ else
   if [[ -f "${SCRIPT_PARENT_DIR}/Codex.dmg" ]]; then
     INPUT_DMG="${SCRIPT_PARENT_DIR}/Codex.dmg"
   else
-    mapfile -t found_dmgs < <(find "${SCRIPT_PARENT_DIR}" -maxdepth 1 -type f -name "*.dmg" ! -name "$(basename "${OUTPUT_DMG}")" | sort)
+    found_dmgs=()
+    while IFS= read -r line; do
+      found_dmgs+=("$line")
+    done < <(find "${SCRIPT_PARENT_DIR}" -maxdepth 1 -type f -name "*.dmg" ! -name "$(basename "${OUTPUT_DMG}")" | sort)
     if [[ ${#found_dmgs[@]} -eq 0 ]]; then
       die "No source DMG found. Put Codex.dmg next to this repo folder (../Codex.dmg) or pass a path."
     fi
