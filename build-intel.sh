@@ -172,24 +172,17 @@ cat > "${BUILD_PROJECT}/package.json" <<EOF
   "private": true,
   "version": "1.0.0",
   "dependencies": {
-    "@openai/codex": "latest",
-    "better-sqlite3": "${BS_VERSION}",
-    "electron": "${ELECTRON_VERSION}",
-    "node-pty": "${NP_VERSION}"
+    "@openai/codex-darwin-x64": "latest",
+    "electron": "${ELECTRON_VERSION}"
   }
 }
 EOF
 
 (
   cd "${BUILD_PROJECT}"
-  # Force native optional/prebuilt packages to resolve for Electron runtime
-  # (NODE_MODULE_VERSION 143 for Electron 40) instead of host Node runtime.
-  # Some user npmrc files set build_from_source=true; override it here.
-  npm_config_runtime=electron \
-  npm_config_target="${ELECTRON_VERSION}" \
-  npm_config_disturl="https://electronjs.org/headers" \
+  # Install prebuilt x64 runtime/vendor artifacts only; avoid native build scripts.
+  npm_config_ignore_scripts=true \
   npm_config_arch=x64 \
-  npm_config_build_from_source=false \
     npm install --no-audit --no-fund
 )
 
@@ -239,30 +232,31 @@ find_x64_binary() {
   return 1
 }
 
-# Resolve better-sqlite3 x64 binary from install outputs.
-# Prefer packaged prebuild paths to avoid accidentally selecting a host-Node ABI build.
-BS_NODE_SRC=""
-for candidate in \
-  "${BUILD_PROJECT}/node_modules/better-sqlite3/prebuilds/*/*better_sqlite3*.node" \
-  "${BUILD_PROJECT}/node_modules/better-sqlite3/build/Release/better_sqlite3.node"; do
-  match="$(compgen -G "${candidate}" | head -n 1 || true)"
-  if [[ -n "${match}" ]]; then
-    file_out="$(file "${match}" 2>/dev/null || true)"
-    [[ "${file_out}" == *"x86_64"* ]] || continue
-    BS_NODE_SRC="${match}"
-    break
-  fi
-done
+# Resolve better-sqlite3 x64 binary from official x64 Codex package first,
+# then fallback to generic locations.
+BS_NODE_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "better_sqlite3.node" "@openai/codex-darwin-x64" || true)"
+if [[ -z "${BS_NODE_SRC}" ]]; then
+  BS_NODE_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "better_sqlite3.node" "better-sqlite3" || true)"
+fi
 [[ -n "${BS_NODE_SRC}" ]] || die "Cannot find x64 better-sqlite3 binary in build project"
 
-# Resolve node-pty outputs from any packaged prebuild location (no native rebuild).
-NODE_PTY_NODE_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "node-pty.node" "node-pty" || true)"
+# Resolve node-pty outputs from official x64 Codex package first, then fallback.
+NODE_PTY_NODE_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "pty.node" "@openai/codex-darwin-x64" || true)"
+if [[ -z "${NODE_PTY_NODE_SRC}" ]]; then
+  NODE_PTY_NODE_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "node-pty.node" "@openai/codex-darwin-x64" || true)"
+fi
+if [[ -z "${NODE_PTY_NODE_SRC}" ]]; then
+  NODE_PTY_NODE_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "node-pty.node" "node-pty" || true)"
+fi
 if [[ -z "${NODE_PTY_NODE_SRC}" ]]; then
   NODE_PTY_NODE_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "pty.node" "node-pty" || true)"
 fi
 [[ -n "${NODE_PTY_NODE_SRC}" ]] || die "Cannot find x64 node-pty binary in build project"
 
-NODE_PTY_SPAWN_HELPER_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "spawn-helper" "node-pty" || true)"
+NODE_PTY_SPAWN_HELPER_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "spawn-helper" "@openai/codex-darwin-x64" || true)"
+if [[ -z "${NODE_PTY_SPAWN_HELPER_SRC}" ]]; then
+  NODE_PTY_SPAWN_HELPER_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "spawn-helper" "node-pty" || true)"
+fi
 [[ -n "${NODE_PTY_SPAWN_HELPER_SRC}" ]] || die "Cannot find x64 node-pty spawn-helper in build project"
 
 # Replace arm64 native artifacts with x64 binaries.
@@ -274,7 +268,10 @@ install -m 755 "${NODE_PTY_NODE_SRC}" \
 install -m 755 "${NODE_PTY_SPAWN_HELPER_SRC}" \
   "${TARGET_UNPACKED}/node_modules/node-pty/build/Release/spawn-helper"
 
-NODE_PTY_BIN_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "node-pty.node" "node-pty/bin" || true)"
+NODE_PTY_BIN_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "node-pty.node" "@openai/codex-darwin-x64" || true)"
+if [[ -z "${NODE_PTY_BIN_SRC}" ]]; then
+  NODE_PTY_BIN_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "node-pty.node" "node-pty/bin" || true)"
+fi
 if [[ -n "${NODE_PTY_BIN_SRC}" ]]; then
   mkdir -p "${TARGET_UNPACKED}/node_modules/node-pty/bin/darwin-x64-143"
   install -m 755 "${NODE_PTY_BIN_SRC}" "${TARGET_UNPACKED}/node_modules/node-pty/bin/darwin-x64-143/node-pty.node"
