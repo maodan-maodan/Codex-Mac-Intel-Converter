@@ -248,7 +248,22 @@ BS_NODE_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "better_sqlite3.n
 if [[ -z "${BS_NODE_SRC}" ]]; then
   BS_NODE_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "better_sqlite3.node" "@openai/codex" || true)"
 fi
-[[ -n "${BS_NODE_SRC}" ]] || die "Cannot find x64 better-sqlite3 binary in build project"
+if [[ -z "${BS_NODE_SRC}" ]]; then
+  log "x64 better-sqlite3 prebuilt not found; attempting local Electron rebuild fallback"
+  (
+    cd "${BUILD_PROJECT}"
+    SDKROOT="$(xcrun --sdk macosx --show-sdk-path 2>/dev/null || true)"
+    export SDKROOT
+    export npm_config_runtime=electron
+    export npm_config_target="${ELECTRON_VERSION}"
+    export npm_config_disturl="https://electronjs.org/headers"
+    export npm_config_arch=x64
+    export npm_config_build_from_source=true
+    npm rebuild better-sqlite3 --no-audit --no-fund || true
+  )
+  BS_NODE_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "better_sqlite3.node" "better-sqlite3" || true)"
+fi
+[[ -n "${BS_NODE_SRC}" ]] || die "Cannot find x64 better-sqlite3 binary in build project (prebuilt and fallback rebuild both failed)"
 
 # Resolve node-pty outputs from the package itself first (prebuilds),
 # then fallback to binaries bundled within @openai/codex.
