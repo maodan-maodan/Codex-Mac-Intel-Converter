@@ -268,12 +268,24 @@ if [[ -z "${BS_NODE_SRC}" ]]; then
     export npm_config_build_from_source=true
 
     export SDKROOT="$(xcrun --sdk macosx --show-sdk-path 2>/dev/null || true)"
-    TOOLCHAIN_DIR="$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain"
-    CLT_CXX_INCLUDE="${TOOLCHAIN_DIR}/usr/include/c++/v1"
-    if [[ -d "${CLT_CXX_INCLUDE}" ]]; then
-      export CPPFLAGS="${CPPFLAGS:-} -isystem ${CLT_CXX_INCLUDE}"
-      export CXXFLAGS="${CXXFLAGS:-} -isystem ${CLT_CXX_INCLUDE}"
-    fi
+    export CC="$(xcrun --find clang 2>/dev/null || true)"
+    export CXX="$(xcrun --find clang++ 2>/dev/null || true)"
+
+    TOOLCHAIN_DIR="$(xcode-select -p 2>/dev/null || true)/Toolchains/XcodeDefault.xctoolchain"
+    CXX_INCLUDE_CANDIDATES=(
+      "${SDKROOT}/usr/include/c++/v1"
+      "${TOOLCHAIN_DIR}/usr/include/c++/v1"
+      "/Library/Developer/CommandLineTools/usr/include/c++/v1"
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include/c++/v1"
+    )
+    for inc in "${CXX_INCLUDE_CANDIDATES[@]}"; do
+      if [[ -d "${inc}" ]]; then
+        export CPPFLAGS="${CPPFLAGS:-} -isystem ${inc}"
+        export CXXFLAGS="${CXXFLAGS:-} -isystem ${inc}"
+        export CPATH="${inc}${CPATH:+:${CPATH}}"
+        break
+      fi
+    done
 
     npm rebuild better-sqlite3 --no-audit --no-fund || true
   )
