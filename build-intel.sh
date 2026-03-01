@@ -182,7 +182,15 @@ EOF
 
 (
   cd "${BUILD_PROJECT}"
-  npm install --no-audit --no-fund
+  # Force native optional/prebuilt packages to resolve for Electron runtime
+  # (NODE_MODULE_VERSION 143 for Electron 40) instead of host Node runtime.
+  # Some user npmrc files set build_from_source=true; override it here.
+  npm_config_runtime=electron \
+  npm_config_target="${ELECTRON_VERSION}" \
+  npm_config_disturl="https://electronjs.org/headers" \
+  npm_config_arch=x64 \
+  npm_config_build_from_source=false \
+    npm install --no-audit --no-fund
 )
 
 # Use Electron x64 app template as the destination runtime.
@@ -231,8 +239,20 @@ find_x64_binary() {
   return 1
 }
 
-# Resolve better-sqlite3 x64 binary from any install location (build/prebuilds/etc).
-BS_NODE_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "better_sqlite3.node" "better-sqlite3" || true)"
+# Resolve better-sqlite3 x64 binary from install outputs.
+# Prefer packaged prebuild paths to avoid accidentally selecting a host-Node ABI build.
+BS_NODE_SRC=""
+for candidate in \
+  "${BUILD_PROJECT}/node_modules/better-sqlite3/prebuilds/*/*better_sqlite3*.node" \
+  "${BUILD_PROJECT}/node_modules/better-sqlite3/build/Release/better_sqlite3.node"; do
+  match="$(compgen -G "${candidate}" | head -n 1 || true)"
+  if [[ -n "${match}" ]]; then
+    file_out="$(file "${match}" 2>/dev/null || true)"
+    [[ "${file_out}" == *"x86_64"* ]] || continue
+    BS_NODE_SRC="${match}"
+    break
+  fi
+done
 [[ -n "${BS_NODE_SRC}" ]] || die "Cannot find x64 better-sqlite3 binary in build project"
 
 # Resolve node-pty outputs from any packaged prebuild location (no native rebuild).
