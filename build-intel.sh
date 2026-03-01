@@ -172,7 +172,7 @@ cat > "${BUILD_PROJECT}/package.json" <<EOF
   "private": true,
   "version": "1.0.0",
   "dependencies": {
-    "@openai/codex-darwin-x64": "latest",
+    "@openai/codex": "latest",
     "electron": "${ELECTRON_VERSION}"
   }
 }
@@ -234,16 +234,16 @@ find_x64_binary() {
 
 # Resolve better-sqlite3 x64 binary from official x64 Codex package first,
 # then fallback to generic locations.
-BS_NODE_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "better_sqlite3.node" "@openai/codex-darwin-x64" || true)"
+BS_NODE_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "better_sqlite3.node" "@openai/codex" || true)"
 if [[ -z "${BS_NODE_SRC}" ]]; then
   BS_NODE_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "better_sqlite3.node" "better-sqlite3" || true)"
 fi
 [[ -n "${BS_NODE_SRC}" ]] || die "Cannot find x64 better-sqlite3 binary in build project"
 
 # Resolve node-pty outputs from official x64 Codex package first, then fallback.
-NODE_PTY_NODE_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "pty.node" "@openai/codex-darwin-x64" || true)"
+NODE_PTY_NODE_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "pty.node" "@openai/codex" || true)"
 if [[ -z "${NODE_PTY_NODE_SRC}" ]]; then
-  NODE_PTY_NODE_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "node-pty.node" "@openai/codex-darwin-x64" || true)"
+  NODE_PTY_NODE_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "node-pty.node" "@openai/codex" || true)"
 fi
 if [[ -z "${NODE_PTY_NODE_SRC}" ]]; then
   NODE_PTY_NODE_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "node-pty.node" "node-pty" || true)"
@@ -253,7 +253,7 @@ if [[ -z "${NODE_PTY_NODE_SRC}" ]]; then
 fi
 [[ -n "${NODE_PTY_NODE_SRC}" ]] || die "Cannot find x64 node-pty binary in build project"
 
-NODE_PTY_SPAWN_HELPER_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "spawn-helper" "@openai/codex-darwin-x64" || true)"
+NODE_PTY_SPAWN_HELPER_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "spawn-helper" "@openai/codex" || true)"
 if [[ -z "${NODE_PTY_SPAWN_HELPER_SRC}" ]]; then
   NODE_PTY_SPAWN_HELPER_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "spawn-helper" "node-pty" || true)"
 fi
@@ -268,7 +268,7 @@ install -m 755 "${NODE_PTY_NODE_SRC}" \
 install -m 755 "${NODE_PTY_SPAWN_HELPER_SRC}" \
   "${TARGET_UNPACKED}/node_modules/node-pty/build/Release/spawn-helper"
 
-NODE_PTY_BIN_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "node-pty.node" "@openai/codex-darwin-x64" || true)"
+NODE_PTY_BIN_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "node-pty.node" "@openai/codex" || true)"
 if [[ -z "${NODE_PTY_BIN_SRC}" ]]; then
   NODE_PTY_BIN_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "node-pty.node" "node-pty/bin" || true)"
 fi
@@ -281,11 +281,16 @@ if [[ -n "${NODE_PTY_BIN_SRC}" ]]; then
   fi
 fi
 
-CLI_X64_ROOT="${BUILD_PROJECT}/node_modules/@openai/codex-darwin-x64/vendor/x86_64-apple-darwin"
-CLI_X64_BIN="${CLI_X64_ROOT}/codex/codex"
-RG_X64_BIN="${CLI_X64_ROOT}/path/rg"
-[[ -f "${CLI_X64_BIN}" ]] || die "x64 Codex CLI binary not found after npm install"
-[[ -f "${RG_X64_BIN}" ]] || die "x64 rg binary not found after npm install"
+CLI_X64_BIN="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "codex" "vendor/x86_64-apple-darwin/codex" || true)"
+if [[ -z "${CLI_X64_BIN}" ]]; then
+  CLI_X64_BIN="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "codex" "@openai/codex" || true)"
+fi
+RG_X64_BIN="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "rg" "vendor/x86_64-apple-darwin/path" || true)"
+if [[ -z "${RG_X64_BIN}" ]]; then
+  RG_X64_BIN="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "rg" "@openai/codex" || true)"
+fi
+[[ -n "${CLI_X64_BIN}" ]] || die "x64 Codex CLI binary not found after npm install"
+[[ -n "${RG_X64_BIN}" ]] || die "x64 rg binary not found after npm install"
 
 # Replace bundled arm64 codex/rg command-line binaries.
 log "Replacing bundled codex/rg binaries with x64 versions"
