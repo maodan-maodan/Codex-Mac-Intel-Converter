@@ -186,6 +186,12 @@ EOF
   npm_config_ignore_scripts=true \
   npm_config_arch=x64 \
     npm install --no-audit --no-fund "@openai/codex@latest"
+
+  # Install native module packages themselves (without running install scripts)
+  # so packaged prebuilt binaries are available for transplant.
+  npm_config_ignore_scripts=true \
+  npm_config_arch=x64 \
+    npm install --no-audit --no-fund "better-sqlite3@${BS_VERSION}" "node-pty@${NP_VERSION}"
 )
 
 # Use Electron x64 app template as the destination runtime.
@@ -236,30 +242,31 @@ find_x64_binary() {
   return 1
 }
 
-# Resolve better-sqlite3 x64 binary from official x64 Codex package first,
-# then fallback to generic locations.
-BS_NODE_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "better_sqlite3.node" "@openai/codex" || true)"
+# Resolve better-sqlite3 x64 binary from the package itself first (prebuilds),
+# then fallback to binaries bundled within @openai/codex.
+BS_NODE_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "better_sqlite3.node" "better-sqlite3" || true)"
 if [[ -z "${BS_NODE_SRC}" ]]; then
-  BS_NODE_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "better_sqlite3.node" "better-sqlite3" || true)"
+  BS_NODE_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "better_sqlite3.node" "@openai/codex" || true)"
 fi
 [[ -n "${BS_NODE_SRC}" ]] || die "Cannot find x64 better-sqlite3 binary in build project"
 
-# Resolve node-pty outputs from official x64 Codex package first, then fallback.
-NODE_PTY_NODE_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "pty.node" "@openai/codex" || true)"
-if [[ -z "${NODE_PTY_NODE_SRC}" ]]; then
-  NODE_PTY_NODE_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "node-pty.node" "@openai/codex" || true)"
-fi
-if [[ -z "${NODE_PTY_NODE_SRC}" ]]; then
-  NODE_PTY_NODE_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "node-pty.node" "node-pty" || true)"
-fi
+# Resolve node-pty outputs from the package itself first (prebuilds),
+# then fallback to binaries bundled within @openai/codex.
+NODE_PTY_NODE_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "node-pty.node" "node-pty" || true)"
 if [[ -z "${NODE_PTY_NODE_SRC}" ]]; then
   NODE_PTY_NODE_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "pty.node" "node-pty" || true)"
 fi
+if [[ -z "${NODE_PTY_NODE_SRC}" ]]; then
+  NODE_PTY_NODE_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "pty.node" "@openai/codex" || true)"
+fi
+if [[ -z "${NODE_PTY_NODE_SRC}" ]]; then
+  NODE_PTY_NODE_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "node-pty.node" "@openai/codex" || true)"
+fi
 [[ -n "${NODE_PTY_NODE_SRC}" ]] || die "Cannot find x64 node-pty binary in build project"
 
-NODE_PTY_SPAWN_HELPER_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "spawn-helper" "@openai/codex" || true)"
+NODE_PTY_SPAWN_HELPER_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "spawn-helper" "node-pty" || true)"
 if [[ -z "${NODE_PTY_SPAWN_HELPER_SRC}" ]]; then
-  NODE_PTY_SPAWN_HELPER_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "spawn-helper" "node-pty" || true)"
+  NODE_PTY_SPAWN_HELPER_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "spawn-helper" "@openai/codex" || true)"
 fi
 [[ -n "${NODE_PTY_SPAWN_HELPER_SRC}" ]] || die "Cannot find x64 node-pty spawn-helper in build project"
 
@@ -272,9 +279,9 @@ install -m 755 "${NODE_PTY_NODE_SRC}" \
 install -m 755 "${NODE_PTY_SPAWN_HELPER_SRC}" \
   "${TARGET_UNPACKED}/node_modules/node-pty/build/Release/spawn-helper"
 
-NODE_PTY_BIN_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "node-pty.node" "@openai/codex" || true)"
+NODE_PTY_BIN_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "node-pty.node" "node-pty/bin" || true)"
 if [[ -z "${NODE_PTY_BIN_SRC}" ]]; then
-  NODE_PTY_BIN_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "node-pty.node" "node-pty/bin" || true)"
+  NODE_PTY_BIN_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "node-pty.node" "@openai/codex" || true)"
 fi
 if [[ -n "${NODE_PTY_BIN_SRC}" ]]; then
   mkdir -p "${TARGET_UNPACKED}/node_modules/node-pty/bin/darwin-x64-143"
