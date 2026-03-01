@@ -256,7 +256,30 @@ if [[ -z "${BS_NODE_SRC}" ]]; then
   )
   BS_NODE_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "better_sqlite3.node" "better-sqlite3" || true)"
 fi
-[[ -n "${BS_NODE_SRC}" ]] || die "Cannot find x64 better-sqlite3 binary in build project (package lookup and prebuild-install download both failed)"
+
+if [[ -z "${BS_NODE_SRC}" ]]; then
+  log "Prebuild download unavailable; attempting local better-sqlite3 rebuild with explicit Apple toolchain paths"
+  (
+    cd "${BUILD_PROJECT}"
+    export npm_config_runtime=electron
+    export npm_config_target="${ELECTRON_VERSION}"
+    export npm_config_disturl="https://electronjs.org/headers"
+    export npm_config_arch=x64
+    export npm_config_build_from_source=true
+
+    export SDKROOT="$(xcrun --sdk macosx --show-sdk-path 2>/dev/null || true)"
+    TOOLCHAIN_DIR="$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain"
+    CLT_CXX_INCLUDE="${TOOLCHAIN_DIR}/usr/include/c++/v1"
+    if [[ -d "${CLT_CXX_INCLUDE}" ]]; then
+      export CPPFLAGS="${CPPFLAGS:-} -isystem ${CLT_CXX_INCLUDE}"
+      export CXXFLAGS="${CXXFLAGS:-} -isystem ${CLT_CXX_INCLUDE}"
+    fi
+
+    npm rebuild better-sqlite3 --no-audit --no-fund || true
+  )
+  BS_NODE_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "better_sqlite3.node" "better-sqlite3" || true)"
+fi
+[[ -n "${BS_NODE_SRC}" ]] || die "Cannot find x64 better-sqlite3 binary in build project (package lookup, prebuild download, and toolchain rebuild all failed)"
 
 # Resolve node-pty outputs from the package itself first (prebuilds),
 # then fallback to binaries bundled within @openai/codex.
