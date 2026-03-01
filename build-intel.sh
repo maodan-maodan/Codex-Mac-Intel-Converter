@@ -176,9 +176,6 @@ cat > "${BUILD_PROJECT}/package.json" <<EOF
     "better-sqlite3": "${BS_VERSION}",
     "electron": "${ELECTRON_VERSION}",
     "node-pty": "${NP_VERSION}"
-  },
-  "devDependencies": {
-    "@electron/rebuild": "3.7.2"
   }
 }
 EOF
@@ -203,26 +200,60 @@ cp "${ORIG_APP}/Contents/Info.plist" "${TARGET_APP}/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :LSEnvironment:ELECTRON_RENDERER_URL string app://-/index.html" "${TARGET_APP}/Contents/Info.plist" >/dev/null 2>&1 || \
   /usr/libexec/PlistBuddy -c "Set :LSEnvironment:ELECTRON_RENDERER_URL app://-/index.html" "${TARGET_APP}/Contents/Info.plist" >/dev/null
 
-# Rebuild native modules against Electron x64 ABI.
-log "Rebuilding native modules for Electron ${ELECTRON_VERSION} x64"
-(
-  cd "${BUILD_PROJECT}"
-  npx --yes @electron/rebuild -f -w better-sqlite3,node-pty --arch=x64 --version "${ELECTRON_VERSION}" -m "${BUILD_PROJECT}"
-)
+# Do not run electron-rebuild/native compilation in this pipeline.
+# This flow intentionally relies on prebuilt x64 artifacts only, so it does not
+# depend on local C/C++ toolchains (make/clang/Xcode headers).
+log "Skipping electron-rebuild; using prebuilt x64 native binaries only"
 
 TARGET_UNPACKED="${TARGET_APP}/Contents/Resources/app.asar.unpacked"
 [[ -d "${TARGET_UNPACKED}" ]] || die "Target app.asar.unpacked not found"
 
-# Replace arm64 native artifacts with rebuilt x64 binaries.
+# Resolve better-sqlite3 x64 binary from prebuilt/install outputs.
+BS_NODE_SRC=""
+for candidate in \
+  "${BUILD_PROJECT}/node_modules/better-sqlite3/build/Release/better_sqlite3.node" \
+  "${BUILD_PROJECT}/node_modules/better-sqlite3/prebuilds/darwin-x64/*.node"; do
+  match="$(compgen -G "${candidate}" | head -n 1 || true)"
+  if [[ -n "${match}" ]]; then
+    BS_NODE_SRC="${match}"
+    break
+  fi
+done
+[[ -n "${BS_NODE_SRC}" ]] || die "Cannot find x64 better-sqlite3 binary in build project"
+
+# Resolve node-pty outputs from packaged prebuilds only.
+NODE_PTY_NODE_SRC=""
+for candidate in \
+  "${BUILD_PROJECT}/node_modules/node-pty/bin/darwin-x64-*/node-pty.node"; do
+  match="$(compgen -G "${candidate}" | head -n 1 || true)"
+  if [[ -n "${match}" ]]; then
+    NODE_PTY_NODE_SRC="${match}"
+    break
+  fi
+done
+[[ -n "${NODE_PTY_NODE_SRC}" ]] || die "Cannot find x64 node-pty binary in build project"
+
+NODE_PTY_SPAWN_HELPER_SRC=""
+for candidate in \
+  "${BUILD_PROJECT}/node_modules/node-pty/bin/darwin-x64-*/spawn-helper"; do
+  match="$(compgen -G "${candidate}" | head -n 1 || true)"
+  if [[ -n "${match}" ]]; then
+    NODE_PTY_SPAWN_HELPER_SRC="${match}"
+    break
+  fi
+done
+[[ -n "${NODE_PTY_SPAWN_HELPER_SRC}" ]] || die "Cannot find x64 node-pty spawn-helper in build project"
+
+# Replace arm64 native artifacts with x64 binaries.
 log "Replacing native binaries inside app.asar.unpacked"
-install -m 755 "${BUILD_PROJECT}/node_modules/better-sqlite3/build/Release/better_sqlite3.node" \
+install -m 755 "${BS_NODE_SRC}" \
   "${TARGET_UNPACKED}/node_modules/better-sqlite3/build/Release/better_sqlite3.node"
-install -m 755 "${BUILD_PROJECT}/node_modules/node-pty/build/Release/pty.node" \
+install -m 755 "${NODE_PTY_NODE_SRC}" \
   "${TARGET_UNPACKED}/node_modules/node-pty/build/Release/pty.node"
-install -m 755 "${BUILD_PROJECT}/node_modules/node-pty/build/Release/spawn-helper" \
+install -m 755 "${NODE_PTY_SPAWN_HELPER_SRC}" \
   "${TARGET_UNPACKED}/node_modules/node-pty/build/Release/spawn-helper"
 
-NODE_PTY_BIN_SRC="$(find "${BUILD_PROJECT}/node_modules/node-pty/bin" -type f -name "node-pty.node" | grep "darwin-x64" | head -n 1 || true)"
+NODE_PTY_BIN_SRC="$(compgen -G "${BUILD_PROJECT}/node_modules/node-pty/bin/darwin-x64-*/node-pty.node" | head -n 1 || true)"
 if [[ -n "${NODE_PTY_BIN_SRC}" ]]; then
   mkdir -p "${TARGET_UNPACKED}/node_modules/node-pty/bin/darwin-x64-143"
   install -m 755 "${NODE_PTY_BIN_SRC}" "${TARGET_UNPACKED}/node_modules/node-pty/bin/darwin-x64-143/node-pty.node"
