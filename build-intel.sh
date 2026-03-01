@@ -170,27 +170,35 @@ cat > "${BUILD_PROJECT}/package.json" <<EOF
 {
   "name": "codex-intel-rebuild",
   "private": true,
-  "version": "1.0.0",
-  "dependencies": {
-    "@openai/codex": "latest",
-    "better-sqlite3": "${BS_VERSION}",
-    "electron": "${ELECTRON_VERSION}",
-    "node-pty": "${NP_VERSION}"
-  },
-  "devDependencies": {
-    "@electron/rebuild": "3.7.2"
-  }
+  "version": "1.0.0"
 }
 EOF
 
 (
   cd "${BUILD_PROJECT}"
-  npm install --no-audit --no-fund
+  # Electron.app is downloaded by electron's postinstall script, so scripts must
+  # stay enabled for this package.
+  npm_config_arch=x64 \
+    npm install --no-audit --no-fund "electron@${ELECTRON_VERSION}"
+
+  # Install Codex package without running dependency scripts to avoid triggering
+  # native source builds on local machines.
+  npm_config_ignore_scripts=true \
+  npm_config_arch=x64 \
+    npm install --no-audit --no-fund "@openai/codex@latest"
+
+  # Install native module packages themselves (without running install scripts)
+  # so packaged prebuilt binaries are available for transplant.
+  npm_config_ignore_scripts=true \
+  npm_config_arch=x64 \
+    npm install --no-audit --no-fund "better-sqlite3@${BS_VERSION}" "node-pty@${NP_VERSION}"
 )
 
 # Use Electron x64 app template as the destination runtime.
 log "Creating Intel app bundle from Electron runtime"
-ditto "${BUILD_PROJECT}/node_modules/electron/dist/Electron.app" "${TARGET_APP}"
+ELECTRON_APP_SRC="${BUILD_PROJECT}/node_modules/electron/dist/Electron.app"
+[[ -d "${ELECTRON_APP_SRC}" ]] || die "Electron.app not found after install: ${ELECTRON_APP_SRC}"
+ditto "${ELECTRON_APP_SRC}" "${TARGET_APP}"
 
 # Inject original Codex app resources into the x64 runtime shell.
 log "Injecting Codex resources from original app"
@@ -203,26 +211,121 @@ cp "${ORIG_APP}/Contents/Info.plist" "${TARGET_APP}/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :LSEnvironment:ELECTRON_RENDERER_URL string app://-/index.html" "${TARGET_APP}/Contents/Info.plist" >/dev/null 2>&1 || \
   /usr/libexec/PlistBuddy -c "Set :LSEnvironment:ELECTRON_RENDERER_URL app://-/index.html" "${TARGET_APP}/Contents/Info.plist" >/dev/null
 
-# Rebuild native modules against Electron x64 ABI.
-log "Rebuilding native modules for Electron ${ELECTRON_VERSION} x64"
-(
-  cd "${BUILD_PROJECT}"
-  npx --yes @electron/rebuild -f -w better-sqlite3,node-pty --arch=x64 --version "${ELECTRON_VERSION}" -m "${BUILD_PROJECT}"
-)
+# Do not run electron-rebuild/native compilation in this pipeline.
+# This flow intentionally relies on prebuilt x64 artifacts only, so it does not
+# depend on local C/C++ toolchains (make/clang/Xcode headers).
+log "Skipping electron-rebuild; using prebuilt x64 native binaries only"
 
 TARGET_UNPACKED="${TARGET_APP}/Contents/Resources/app.asar.unpacked"
 [[ -d "${TARGET_UNPACKED}" ]] || die "Target app.asar.unpacked not found"
 
-# Replace arm64 native artifacts with rebuilt x64 binaries.
+# Helper: find a binary under a directory by filename, preferring x86_64/universal binaries.
+find_x64_binary() {
+  local search_root="$1"
+  local basename_pattern="$2"
+  local preferred_path_filter="${3:-}"
+  local candidate=""
+
+  while IFS= read -r candidate; do
+    if [[ -n "${preferred_path_filter}" && "${candidate}" != *"${preferred_path_filter}"* ]]; then
+      continue
+    fi
+
+    local out
+    out="$(file "${candidate}" 2>/dev/null || true)"
+    if [[ "${out}" == *"x86_64"* ]]; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+  done < <(find "${search_root}" -type f -name "${basename_pattern}" | sort)
+
+  return 1
+}
+
+# Resolve better-sqlite3 x64 binary from the package itself first (prebuilds),
+# then fallback to binaries bundled within @openai/codex.
+BS_NODE_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "better_sqlite3.node" "better-sqlite3" || true)"
+if [[ -z "${BS_NODE_SRC}" ]]; then
+  BS_NODE_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "better_sqlite3.node" "@openai/codex" || true)"
+fi
+if [[ -z "${BS_NODE_SRC}" ]]; then
+  log "x64 better-sqlite3 prebuilt not found in package files; attempting prebuild-install download"
+  (
+    cd "${BUILD_PROJECT}/node_modules/better-sqlite3"
+    npx --yes prebuild-install --runtime electron --target "${ELECTRON_VERSION}" --arch x64 || true
+  )
+  BS_NODE_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "better_sqlite3.node" "better-sqlite3" || true)"
+fi
+
+if [[ -z "${BS_NODE_SRC}" ]]; then
+  log "Prebuild download unavailable; attempting local better-sqlite3 rebuild with explicit Apple toolchain paths"
+  (
+    cd "${BUILD_PROJECT}"
+    export npm_config_runtime=electron
+    export npm_config_target="${ELECTRON_VERSION}"
+    export npm_config_disturl="https://electronjs.org/headers"
+    export npm_config_arch=x64
+    export npm_config_build_from_source=true
+
+    export SDKROOT="$(xcrun --sdk macosx --show-sdk-path 2>/dev/null || true)"
+    export CC="$(xcrun --find clang 2>/dev/null || true)"
+    export CXX="$(xcrun --find clang++ 2>/dev/null || true)"
+
+    TOOLCHAIN_DIR="$(xcode-select -p 2>/dev/null || true)/Toolchains/XcodeDefault.xctoolchain"
+    CXX_INCLUDE_CANDIDATES=(
+      "${SDKROOT}/usr/include/c++/v1"
+      "${TOOLCHAIN_DIR}/usr/include/c++/v1"
+      "/Library/Developer/CommandLineTools/usr/include/c++/v1"
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include/c++/v1"
+    )
+    for inc in "${CXX_INCLUDE_CANDIDATES[@]}"; do
+      if [[ -d "${inc}" ]]; then
+        export CPPFLAGS="${CPPFLAGS:-} -isystem ${inc}"
+        export CXXFLAGS="${CXXFLAGS:-} -isystem ${inc}"
+        export CPATH="${inc}${CPATH:+:${CPATH}}"
+        break
+      fi
+    done
+
+    npm rebuild better-sqlite3 --no-audit --no-fund || true
+  )
+  BS_NODE_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "better_sqlite3.node" "better-sqlite3" || true)"
+fi
+[[ -n "${BS_NODE_SRC}" ]] || die "Cannot find x64 better-sqlite3 binary in build project (package lookup, prebuild download, and toolchain rebuild all failed)"
+
+# Resolve node-pty outputs from the package itself first (prebuilds),
+# then fallback to binaries bundled within @openai/codex.
+NODE_PTY_NODE_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "node-pty.node" "node-pty" || true)"
+if [[ -z "${NODE_PTY_NODE_SRC}" ]]; then
+  NODE_PTY_NODE_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "pty.node" "node-pty" || true)"
+fi
+if [[ -z "${NODE_PTY_NODE_SRC}" ]]; then
+  NODE_PTY_NODE_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "pty.node" "@openai/codex" || true)"
+fi
+if [[ -z "${NODE_PTY_NODE_SRC}" ]]; then
+  NODE_PTY_NODE_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "node-pty.node" "@openai/codex" || true)"
+fi
+[[ -n "${NODE_PTY_NODE_SRC}" ]] || die "Cannot find x64 node-pty binary in build project"
+
+NODE_PTY_SPAWN_HELPER_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "spawn-helper" "node-pty" || true)"
+if [[ -z "${NODE_PTY_SPAWN_HELPER_SRC}" ]]; then
+  NODE_PTY_SPAWN_HELPER_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "spawn-helper" "@openai/codex" || true)"
+fi
+[[ -n "${NODE_PTY_SPAWN_HELPER_SRC}" ]] || die "Cannot find x64 node-pty spawn-helper in build project"
+
+# Replace arm64 native artifacts with x64 binaries.
 log "Replacing native binaries inside app.asar.unpacked"
-install -m 755 "${BUILD_PROJECT}/node_modules/better-sqlite3/build/Release/better_sqlite3.node" \
+install -m 755 "${BS_NODE_SRC}" \
   "${TARGET_UNPACKED}/node_modules/better-sqlite3/build/Release/better_sqlite3.node"
-install -m 755 "${BUILD_PROJECT}/node_modules/node-pty/build/Release/pty.node" \
+install -m 755 "${NODE_PTY_NODE_SRC}" \
   "${TARGET_UNPACKED}/node_modules/node-pty/build/Release/pty.node"
-install -m 755 "${BUILD_PROJECT}/node_modules/node-pty/build/Release/spawn-helper" \
+install -m 755 "${NODE_PTY_SPAWN_HELPER_SRC}" \
   "${TARGET_UNPACKED}/node_modules/node-pty/build/Release/spawn-helper"
 
-NODE_PTY_BIN_SRC="$(find "${BUILD_PROJECT}/node_modules/node-pty/bin" -type f -name "node-pty.node" | grep "darwin-x64" | head -n 1 || true)"
+NODE_PTY_BIN_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "node-pty.node" "node-pty/bin" || true)"
+if [[ -z "${NODE_PTY_BIN_SRC}" ]]; then
+  NODE_PTY_BIN_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "node-pty.node" "@openai/codex" || true)"
+fi
 if [[ -n "${NODE_PTY_BIN_SRC}" ]]; then
   mkdir -p "${TARGET_UNPACKED}/node_modules/node-pty/bin/darwin-x64-143"
   install -m 755 "${NODE_PTY_BIN_SRC}" "${TARGET_UNPACKED}/node_modules/node-pty/bin/darwin-x64-143/node-pty.node"
@@ -232,11 +335,16 @@ if [[ -n "${NODE_PTY_BIN_SRC}" ]]; then
   fi
 fi
 
-CLI_X64_ROOT="${BUILD_PROJECT}/node_modules/@openai/codex-darwin-x64/vendor/x86_64-apple-darwin"
-CLI_X64_BIN="${CLI_X64_ROOT}/codex/codex"
-RG_X64_BIN="${CLI_X64_ROOT}/path/rg"
-[[ -f "${CLI_X64_BIN}" ]] || die "x64 Codex CLI binary not found after npm install"
-[[ -f "${RG_X64_BIN}" ]] || die "x64 rg binary not found after npm install"
+CLI_X64_BIN="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "codex" "vendor/x86_64-apple-darwin/codex" || true)"
+if [[ -z "${CLI_X64_BIN}" ]]; then
+  CLI_X64_BIN="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "codex" "@openai/codex" || true)"
+fi
+RG_X64_BIN="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "rg" "vendor/x86_64-apple-darwin/path" || true)"
+if [[ -z "${RG_X64_BIN}" ]]; then
+  RG_X64_BIN="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "rg" "@openai/codex" || true)"
+fi
+[[ -n "${CLI_X64_BIN}" ]] || die "x64 Codex CLI binary not found after npm install"
+[[ -n "${RG_X64_BIN}" ]] || die "x64 rg binary not found after npm install"
 
 # Replace bundled arm64 codex/rg command-line binaries.
 log "Replacing bundled codex/rg binaries with x64 versions"
