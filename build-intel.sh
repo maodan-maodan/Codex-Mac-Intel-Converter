@@ -170,25 +170,29 @@ cat > "${BUILD_PROJECT}/package.json" <<EOF
 {
   "name": "codex-intel-rebuild",
   "private": true,
-  "version": "1.0.0",
-  "dependencies": {
-    "@openai/codex": "latest",
-    "electron": "${ELECTRON_VERSION}"
-  }
+  "version": "1.0.0"
 }
 EOF
 
 (
   cd "${BUILD_PROJECT}"
-  # Install prebuilt x64 runtime/vendor artifacts only; avoid native build scripts.
+  # Electron.app is downloaded by electron's postinstall script, so scripts must
+  # stay enabled for this package.
+  npm_config_arch=x64 \
+    npm install --no-audit --no-fund "electron@${ELECTRON_VERSION}"
+
+  # Install Codex package without running dependency scripts to avoid triggering
+  # native source builds on local machines.
   npm_config_ignore_scripts=true \
   npm_config_arch=x64 \
-    npm install --no-audit --no-fund
+    npm install --no-audit --no-fund "@openai/codex@latest"
 )
 
 # Use Electron x64 app template as the destination runtime.
 log "Creating Intel app bundle from Electron runtime"
-ditto "${BUILD_PROJECT}/node_modules/electron/dist/Electron.app" "${TARGET_APP}"
+ELECTRON_APP_SRC="${BUILD_PROJECT}/node_modules/electron/dist/Electron.app"
+[[ -d "${ELECTRON_APP_SRC}" ]] || die "Electron.app not found after install: ${ELECTRON_APP_SRC}"
+ditto "${ELECTRON_APP_SRC}" "${TARGET_APP}"
 
 # Inject original Codex app resources into the x64 runtime shell.
 log "Injecting Codex resources from original app"
