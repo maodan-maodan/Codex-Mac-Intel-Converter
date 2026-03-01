@@ -208,40 +208,41 @@ log "Skipping electron-rebuild; using prebuilt x64 native binaries only"
 TARGET_UNPACKED="${TARGET_APP}/Contents/Resources/app.asar.unpacked"
 [[ -d "${TARGET_UNPACKED}" ]] || die "Target app.asar.unpacked not found"
 
-# Resolve better-sqlite3 x64 binary from prebuilt/install outputs.
-BS_NODE_SRC=""
-for candidate in \
-  "${BUILD_PROJECT}/node_modules/better-sqlite3/build/Release/better_sqlite3.node" \
-  "${BUILD_PROJECT}/node_modules/better-sqlite3/prebuilds/darwin-x64/*.node"; do
-  match="$(compgen -G "${candidate}" | head -n 1 || true)"
-  if [[ -n "${match}" ]]; then
-    BS_NODE_SRC="${match}"
-    break
-  fi
-done
+# Helper: find a binary under a directory by filename, preferring x86_64/universal binaries.
+find_x64_binary() {
+  local search_root="$1"
+  local basename_pattern="$2"
+  local preferred_path_filter="${3:-}"
+  local candidate=""
+
+  while IFS= read -r candidate; do
+    if [[ -n "${preferred_path_filter}" && "${candidate}" != *"${preferred_path_filter}"* ]]; then
+      continue
+    fi
+
+    local out
+    out="$(file "${candidate}" 2>/dev/null || true)"
+    if [[ "${out}" == *"x86_64"* ]]; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+  done < <(find "${search_root}" -type f -name "${basename_pattern}" | sort)
+
+  return 1
+}
+
+# Resolve better-sqlite3 x64 binary from any install location (build/prebuilds/etc).
+BS_NODE_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "better_sqlite3.node" "better-sqlite3" || true)"
 [[ -n "${BS_NODE_SRC}" ]] || die "Cannot find x64 better-sqlite3 binary in build project"
 
-# Resolve node-pty outputs from packaged prebuilds only.
-NODE_PTY_NODE_SRC=""
-for candidate in \
-  "${BUILD_PROJECT}/node_modules/node-pty/bin/darwin-x64-*/node-pty.node"; do
-  match="$(compgen -G "${candidate}" | head -n 1 || true)"
-  if [[ -n "${match}" ]]; then
-    NODE_PTY_NODE_SRC="${match}"
-    break
-  fi
-done
+# Resolve node-pty outputs from any packaged prebuild location (no native rebuild).
+NODE_PTY_NODE_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "node-pty.node" "node-pty" || true)"
+if [[ -z "${NODE_PTY_NODE_SRC}" ]]; then
+  NODE_PTY_NODE_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "pty.node" "node-pty" || true)"
+fi
 [[ -n "${NODE_PTY_NODE_SRC}" ]] || die "Cannot find x64 node-pty binary in build project"
 
-NODE_PTY_SPAWN_HELPER_SRC=""
-for candidate in \
-  "${BUILD_PROJECT}/node_modules/node-pty/bin/darwin-x64-*/spawn-helper"; do
-  match="$(compgen -G "${candidate}" | head -n 1 || true)"
-  if [[ -n "${match}" ]]; then
-    NODE_PTY_SPAWN_HELPER_SRC="${match}"
-    break
-  fi
-done
+NODE_PTY_SPAWN_HELPER_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "spawn-helper" "node-pty" || true)"
 [[ -n "${NODE_PTY_SPAWN_HELPER_SRC}" ]] || die "Cannot find x64 node-pty spawn-helper in build project"
 
 # Replace arm64 native artifacts with x64 binaries.
@@ -253,7 +254,7 @@ install -m 755 "${NODE_PTY_NODE_SRC}" \
 install -m 755 "${NODE_PTY_SPAWN_HELPER_SRC}" \
   "${TARGET_UNPACKED}/node_modules/node-pty/build/Release/spawn-helper"
 
-NODE_PTY_BIN_SRC="$(compgen -G "${BUILD_PROJECT}/node_modules/node-pty/bin/darwin-x64-*/node-pty.node" | head -n 1 || true)"
+NODE_PTY_BIN_SRC="$(find_x64_binary "${BUILD_PROJECT}/node_modules" "node-pty.node" "node-pty/bin" || true)"
 if [[ -n "${NODE_PTY_BIN_SRC}" ]]; then
   mkdir -p "${TARGET_UNPACKED}/node_modules/node-pty/bin/darwin-x64-143"
   install -m 755 "${NODE_PTY_BIN_SRC}" "${TARGET_UNPACKED}/node_modules/node-pty/bin/darwin-x64-143/node-pty.node"
